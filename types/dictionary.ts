@@ -32,6 +32,17 @@ export interface ReviewComment {
   replies: Array<{ id: string; author: string; message: string; createdAt: string }>;
 }
 
+export interface ConfirmationBaseline {
+  revision: number;
+  confirmedAt: string;
+  headword: string;
+  definition: string;
+  dialectVariants: DialectVariant[];
+  examples: ExampleSentence[];
+  sources: DictionarySource[];
+  synonyms: string[];
+}
+
 export interface DictionaryEntry {
   id: string;
   headword: string;
@@ -47,6 +58,7 @@ export interface DictionaryEntry {
   createdAt: string;
   updatedAt: string;
   reviewerComments: ReviewComment[];
+  baseline: ConfirmationBaseline | null;
 }
 
 export interface VersionRecord {
@@ -54,6 +66,7 @@ export interface VersionRecord {
   at: string;
   action: string;
   detail: string;
+  revision: number;
   entryId?: string;
   before: DictionaryEntry[];
 }

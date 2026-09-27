@@ -3,13 +3,14 @@ import { defineStore } from 'pinia';
 import type {
   AuditRecord, DictionaryEntry, DictionarySnapshot, DuplicatePair, EntryStatus, ReviewComment, VersionRecord
 } from '~/types/dictionary';
-import { findDuplicates } from '~/utils/dictionary';
+import { BASELINE_FIELD_LABELS, baselineDeviations, captureBaseline, findDuplicates, hasOpenComments, reconcileBaselines } from '~/utils/dictionary';
+import type { BaselineField } from '~/utils/dictionary';
 
 const now = () => new Date().toISOString();
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-const seedEntries = (): DictionaryEntry[] => [
+const seedRawEntries = (): Omit<DictionaryEntry, 'baseline'>[] => [
   {
     id: 'entry-001', headword: 'ŋgɨ³³', pronunciation: 'ŋgɨ˧˧（低平调）', partOfSpeech: '名词', definition: '山间常年不涸的小水潭；也用来比喻安静而可靠的人。',
     dialectVariants: [
@@ -48,6 +49,14 @@ const seedEntries = (): DictionaryEntry[] => [
     reviewerComments: [{ id: 'c-2', field: 'sources', author: '审校·罗老师', message: '请把录音中发言人姓名补到资料来源。', status: 'open', createdAt: '2025-02-25T02:00:00.000Z', replies: [{ id: 'r-1', author: '编辑·阿木', message: '已向调查员索取授权信息，暂以录音编号占位。', createdAt: '2025-02-26T01:00:00.000Z' }] }]
   }
 ];
+
+const seedEntries = (): DictionaryEntry[] => {
+  // 演示数据里的两条“已确认”词条带上确认基线（修订号从 1 起算）
+  return seedRawEntries().map((entry) => ({
+    ...entry,
+    baseline: entry.status === 'confirmed' ? captureBaseline(entry, 1, entry.updatedAt) : null
+  }));
+};
 
 const seedAudit: AuditRecord[] = [{
   id: 'audit-seed', at: now(), action: '载入工作区', detail: '初始化 6 个词条、2 条待回复审校意见和 1 组疑似重复词条', entryIds: []
@@ -102,6 +111,8 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     entries.splice(0, entries.length, ...(clone(value.entries ?? [])));
     versions.splice(0, versions.length, ...(clone(value.versions ?? [])));
     audit.splice(0, audit.length, ...(clone(value.audit ?? [])));
+    // 恢复历史快照后必须重新判断，不能沿用恢复前的确认状态
+    reconcileBaselines(entries);
     if (!entries.some((entry) => entry.id === selectedId.value)) selectedId.value = entries[0]?.id ?? '';
   }
 
@@ -112,15 +123,33 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     mutation();
     revision.value += 1;
     entries.forEach((entry) => { if (entryIds.includes(entry.id)) entry.updatedAt = now(); });
-    versions.unshift({ id: uid('version'), at: now(), action, detail, entryId: entryIds[0], before });
+    // 受审内容偏离确认基线的已确认词条自动回到争议（只改编者备注不会触发）
+    const flipped = enforceConfirmedBaselines();
+    const driftNote = flipped.length
+      ? `；${flipped.map((item) => `“${item.entry.headword || '未命名词条'}”偏离基线${item.deviations.map((field) => BASELINE_FIELD_LABELS[field]).join('、')}，回到争议`).join('；')}`
+      : '';
+    versions.unshift({ id: uid('version'), at: now(), action, detail: `${detail}${driftNote}`, revision: revision.value, entryId: entryIds[0], before });
     versions.splice(120);
-    audit.unshift({ id: uid('audit'), at: now(), action, detail, entryIds });
+    audit.unshift({ id: uid('audit'), at: now(), action, detail: `${detail}${driftNote}`, entryIds });
     audit.splice(300);
+  }
+
+  function enforceConfirmedBaselines() {
+    const flipped: Array<{ entry: DictionaryEntry; deviations: BaselineField[] }> = [];
+    entries.forEach((entry) => {
+      if (entry.status !== 'confirmed' || !entry.baseline) return;
+      const deviations = baselineDeviations(entry);
+      if (deviations.length) {
+        entry.status = 'disputed';
+        flipped.push({ entry, deviations });
+      }
+    });
+    return flipped;
   }
 
   function createEntry() {
     const entry: DictionaryEntry = {
-      id: uid('entry'), headword: '新词条', pronunciation: '', partOfSpeech: '', definition: '', dialectVariants: [], examples: [], sources: [], synonyms: [], status: 'draft', notes: '', createdAt: now(), updatedAt: now(), reviewerComments: []
+      id: uid('entry'), headword: '新词条', pronunciation: '', partOfSpeech: '', definition: '', dialectVariants: [], examples: [], sources: [], synonyms: [], status: 'draft', notes: '', createdAt: now(), updatedAt: now(), reviewerComments: [], baseline: null
     };
     commit('新建词条', '创建草稿词条', [entry.id], () => entries.unshift(entry));
     selectedId.value = entry.id;
@@ -135,8 +164,45 @@ export const useDictionaryStore = defineStore('dictionary', () => {
   function setStatus(entryId: string, status: EntryStatus) {
     const entry = entries.find((item) => item.id === entryId);
     if (!entry || entry.status === status) return;
+    if (status === 'confirmed') { confirmEntry(entryId); return; }
     const labels: Record<EntryStatus, string> = { draft: '草稿', review: '待审', disputed: '争议', confirmed: '已确认' };
     commit('变更状态', `词条状态改为“${labels[status]}”`, [entryId], () => { entry.status = status; });
+  }
+
+  /** 确认结果：未解决意见处理完且受审内容与基线一致时才能确认，并以当前修订号更新基线。 */
+  function confirmEntry(entryId: string): { ok: boolean; reason?: string } {
+    const entry = entries.find((item) => item.id === entryId);
+    if (!entry) return { ok: false, reason: '词条不存在' };
+    if (hasOpenComments(entry)) return { ok: false, reason: '仍有未解决的审校意见，请先全部处理' };
+    if (entry.baseline) {
+      const deviations = baselineDeviations(entry);
+      if (deviations.length) return { ok: false, reason: `受审内容仍偏离基线：${deviations.map((field) => BASELINE_FIELD_LABELS[field]).join('、')}` };
+    }
+    const nextRevision = revision.value + 1;
+    const baseline = captureBaseline(entry, nextRevision);
+    commit('确认词条', `确认受审内容并保存基线（修订 r${nextRevision}）`, [entryId], () => {
+      entry.status = 'confirmed';
+      entry.baseline = baseline;
+    });
+    return { ok: true };
+  }
+
+  /** 审校人逐字段采纳当前偏离值：把该字段并入基线，词条保持争议，全部采纳后才能重新确认。 */
+  function acceptBaselineField(entryId: string, field: BaselineField) {
+    const entry = entries.find((item) => item.id === entryId);
+    if (!entry || !entry.baseline) return;
+    commit('采纳基线偏离项', `将当前${BASELINE_FIELD_LABELS[field]}并入确认基线`, [entryId], () => {
+      if (entry.baseline) Object.assign(entry.baseline, { [field]: clone(entry[field]) });
+    });
+  }
+
+  /** 逐字段退回基线：用确认时保存的值覆盖当前偏离内容。 */
+  function revertBaselineField(entryId: string, field: BaselineField) {
+    const entry = entries.find((item) => item.id === entryId);
+    if (!entry || !entry.baseline) return;
+    commit('恢复基线内容', `将${BASELINE_FIELD_LABELS[field]}恢复为确认基线`, [entryId], () => {
+      if (entry.baseline) Object.assign(entry, { [field]: clone(entry.baseline[field]) });
+    });
   }
 
   function addVariant(entryId: string) {
@@ -290,8 +356,10 @@ export const useDictionaryStore = defineStore('dictionary', () => {
   function restoreVersion(versionId: string) {
     const version = versions.find((item) => item.id === versionId);
     if (!version) return;
-    commit('恢复版本', `恢复 ${new Date(version.at).toLocaleString('zh-CN')} 之前的版本`, [], () => {
+    commit('恢复版本', `恢复 ${new Date(version.at).toLocaleString('zh-CN')} 之前的版本，并重新核对确认基线`, [], () => {
       entries.splice(0, entries.length, ...clone(version.before));
+      // 恢复后逐条重新判断：补建遗留基线，基线不符的回到争议
+      reconcileBaselines(entries);
     });
   }
 
@@ -314,7 +382,8 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     revision, entries, versions, audit, selectedId, hydrated, query, statusFilter, dialectFilter, fieldReplyDrafts,
     selectedEntry, filteredEntries, dialects, duplicates, openComments, persistableSnapshot,
     canUndo: computed(() => undoStack.value.length > 0), canRedo: computed(() => redoStack.value.length > 0),
-    createEntry, updateField, setStatus, addVariant, updateVariant, removeVariant, addExample, updateExample, removeExample,
+    createEntry, updateField, setStatus, confirmEntry, acceptBaselineField, revertBaselineField,
+    addVariant, updateVariant, removeVariant, addExample, updateExample, removeExample,
     addSource, updateSource, removeSource, setSynonyms, addComment, replyComment, toggleComment, deleteEntry, mergeEntries,
     undo, redo, restoreVersion, hydrateFromBrowser, exportPackage
   };

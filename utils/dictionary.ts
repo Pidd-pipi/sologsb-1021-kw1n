@@ -1,4 +1,67 @@
-import type { DictionaryEntry, DuplicatePair } from '~/types/dictionary';
+import type { ConfirmationBaseline, DictionaryEntry, DuplicatePair } from '~/types/dictionary';
+
+/**
+ * 确认基线只覆盖受审内容：词形、释义、变体、例句、来源、同义词。
+ * 发音说明、词性和编者备注不在基线范围内——改备注不应影响确认状态。
+ */
+export const BASELINE_FIELDS = ['headword', 'definition', 'dialectVariants', 'examples', 'sources', 'synonyms'] as const;
+
+export type BaselineField = typeof BASELINE_FIELDS[number];
+
+export const BASELINE_FIELD_LABELS: Record<BaselineField, string> = {
+  headword: '词形',
+  definition: '释义',
+  dialectVariants: '方言变体',
+  examples: '例句',
+  sources: '来源',
+  synonyms: '同义词'
+};
+
+const cloneBaselineFields = (entry: DictionaryEntry) => ({
+  headword: entry.headword,
+  definition: entry.definition,
+  dialectVariants: JSON.parse(JSON.stringify(entry.dialectVariants)) as DictionaryEntry['dialectVariants'],
+  examples: JSON.parse(JSON.stringify(entry.examples)) as DictionaryEntry['examples'],
+  sources: JSON.parse(JSON.stringify(entry.sources)) as DictionaryEntry['sources'],
+  synonyms: [...entry.synonyms]
+});
+
+type BaselineSource = Pick<DictionaryEntry, BaselineField>;
+
+export const captureBaseline = (entry: BaselineSource, revision: number, at = new Date().toISOString()): ConfirmationBaseline => ({
+  revision,
+  confirmedAt: at,
+  ...cloneBaselineFields(entry as DictionaryEntry)
+});
+
+export const baselineDeviations = (entry: DictionaryEntry): BaselineField[] => {
+  if (!entry.baseline) return [];
+  return BASELINE_FIELDS.filter((field) => JSON.stringify(entry.baseline![field]) !== JSON.stringify(entry[field]));
+};
+
+export const hasOpenComments = (entry: DictionaryEntry) => entry.reviewerComments.some((comment) => comment.status === 'open');
+
+/**
+ * 载入历史快照（含从版本记录恢复、撤销重做）后重新判断确认状态：
+ * - 遗留的已确认词条没有基线时，按当前内容补建基线，避免无依据的“已确认”；
+ * - 基线仍在但受审内容与基线不符的，回到争议，不能沿用恢复前的确认状态。
+ */
+export const reconcileBaselines = (entries: DictionaryEntry[]) => {
+  const flipped: Array<{ entry: DictionaryEntry; deviations: BaselineField[] }> = [];
+  entries.forEach((entry) => {
+    if (entry.status !== 'confirmed') return;
+    if (!entry.baseline) {
+      entry.baseline = captureBaseline(entry, 0, entry.updatedAt);
+      return;
+    }
+    const deviations = baselineDeviations(entry);
+    if (deviations.length) {
+      entry.status = 'disputed';
+      flipped.push({ entry, deviations });
+    }
+  });
+  return flipped;
+};
 
 export const normalizeWord = (value: string) => value
   .normalize('NFKC')

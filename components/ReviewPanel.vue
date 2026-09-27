@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { MessagePlugin } from 'tdesign-vue-next';
 import { useDictionaryStore } from '~/store/dictionary';
+import { BASELINE_FIELD_LABELS, baselineDeviations, hasOpenComments } from '~/utils/dictionary';
 
 const store = useDictionaryStore();
 const emit = defineEmits<{ versions: [] }>();
@@ -12,11 +14,21 @@ const comments = computed(() => (entry.value?.reviewerComments ?? []).filter((co
 const fieldLabels: Record<string, string> = {
   headword: '词形', pronunciation: '发音', partOfSpeech: '词性', definition: '释义', dialectVariants: '方言变体', examples: '例句', sources: '来源', synonyms: '同义词', notes: '备注'
 };
+const deviations = computed(() => entry.value ? baselineDeviations(entry.value) : []);
+const canReconfirm = computed(() => entry.value ? !hasOpenComments(entry.value) && deviations.value.length === 0 : false);
+const baselineAt = computed(() => entry.value?.baseline ? new Date(entry.value.baseline.confirmedAt).toLocaleString('zh-CN') : '');
 
 const addComment = () => {
   if (!entry.value || !commentText.value.trim()) return;
   store.addComment(entry.value.id, commentField.value, commentText.value);
   commentText.value = '';
+};
+
+const reconfirm = () => {
+  if (!entry.value) return;
+  const result = store.confirmEntry(entry.value.id);
+  if (result.ok) MessagePlugin.success('已重新确认并更新基线');
+  else MessagePlugin.warning(result.reason ?? '当前还不能重新确认');
 };
 </script>
 
@@ -30,6 +42,25 @@ const addComment = () => {
       <div><strong>{{ entry.reviewerComments.filter((item) => item.status === 'open').length }}</strong><span>待处理</span></div>
       <div><strong>{{ entry.reviewerComments.filter((item) => item.status === 'resolved').length }}</strong><span>已解决</span></div>
       <div><strong>{{ entry.dialectVariants.length }}</strong><span>方言变体</span></div>
+    </div>
+    <div class="baseline-card" :class="{ drifting: deviations.length }">
+      <template v-if="entry.baseline">
+        <div class="baseline-card-head"><strong>确认基线</strong><t-tag size="small" variant="light" :theme="entry.status === 'confirmed' ? 'success' : 'danger'">{{ entry.status === 'confirmed' ? '有效' : '已偏离' }}</t-tag></div>
+        <p>依据修订号 <strong>r{{ entry.baseline.revision }}</strong>，确认于 {{ baselineAt }}</p>
+        <p class="baseline-scope">基线内容：词形 · 释义 · 方言变体 · 例句 · 来源 · 同义词（发音、词性和编者备注不在范围内）</p>
+        <div v-if="deviations.length" class="deviation-tags">
+          <t-tag v-for="field in deviations" :key="field" size="small" theme="danger" variant="light-outline">{{ BASELINE_FIELD_LABELS[field] }} 偏离</t-tag>
+        </div>
+        <ul class="reconfirm-checks">
+          <li :class="{ ok: !entry.reviewerComments.some((item) => item.status === 'open') }">{{ entry.reviewerComments.some((item) => item.status === 'open') ? '✕ 仍有未解决审校意见' : '✓ 审校意见已全部解决' }}</li>
+          <li :class="{ ok: !deviations.length }">{{ deviations.length ? '✕ 受审内容与基线不一致' : '✓ 受审内容与基线一致' }}</li>
+        </ul>
+        <t-button size="small" block theme="success" :disabled="!canReconfirm" @click="reconfirm">重新确认并更新基线</t-button>
+      </template>
+      <template v-else>
+        <div class="baseline-card-head"><strong>确认基线</strong><t-tag size="small" variant="light" theme="default">未建立</t-tag></div>
+        <p>词条确认时将固化六类受审内容并记录修订号，作为审校依据版本。</p>
+      </template>
     </div>
     <div class="comment-filter">
       <button :class="{ active: filter === 'all' }" @click="filter = 'all'">全部</button>

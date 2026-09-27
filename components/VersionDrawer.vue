@@ -21,10 +21,10 @@ const diff = (before: typeof store.entries) => {
 <template>
   <t-drawer v-model:visible="visible" header="版本记录" size="560px" :footer="false">
     <div class="version-drawer">
-      <div class="version-intro"><strong>{{ revisions.length }}</strong><span>个可恢复版本</span><p>每次字段编辑、状态变更、合并或删除都会在提交前保存完整快照。</p></div>
+      <div class="version-intro"><strong>{{ revisions.length }}</strong><span>个可恢复版本</span><p>每次提交前保存完整快照并记录修订号；恢复到旧版本后会重新核对确认基线，基线不符的词条回到争议。</p></div>
       <div class="version-list">
         <article v-for="version in revisions" :key="version.id" class="version-item">
-          <div class="version-line"><span class="version-dot" /><time>{{ new Date(version.at).toLocaleString('zh-CN') }}</time></div>
+          <div class="version-line"><span class="version-dot" /><time>{{ new Date(version.at).toLocaleString('zh-CN') }}</time><t-tag size="small" variant="light" theme="default">r{{ version.revision }}</t-tag></div>
           <strong>{{ version.action }}</strong>
           <p>{{ version.detail }}</p>
           <div class="diff-line"><span>新增 {{ diff(version.before).added }}</span><span>修改 {{ diff(version.before).changed }}</span><span>删除 {{ diff(version.before).removed }}</span></div>

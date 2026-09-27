@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { useDictionaryStore } from '~/store/dictionary';
+import { baselineDeviations } from '~/utils/dictionary';
+import type { DictionaryEntry } from '~/types/dictionary';
 
 const store = useDictionaryStore();
 const emit = defineEmits<{ create: []; duplicates: []; versions: [] }>();
@@ -10,6 +12,8 @@ const statusMeta = {
   disputed: { label: '争议', theme: 'danger' },
   confirmed: { label: '已确认', theme: 'success' }
 } as const;
+
+const isDrifted = (entry: DictionaryEntry) => !!entry.baseline && baselineDeviations(entry).length > 0;
 </script>
 
 <template>
@@ -53,6 +57,8 @@ const statusMeta = {
         <div class="entry-card-meta">
           <span>{{ entry.dialectVariants.length }} 方言变体</span>
           <span>{{ entry.examples.length }} 例句</span>
+          <span v-if="entry.baseline && entry.status === 'confirmed'" class="baseline-count">基线 r{{ entry.baseline.revision }}</span>
+          <span v-if="isDrifted(entry)" class="drift-count">基线偏离 {{ baselineDeviations(entry).length }} 项</span>
           <span v-if="entry.reviewerComments.filter((item) => item.status === 'open').length" class="comment-count">{{ entry.reviewerComments.filter((item) => item.status === 'open').length }} 条意见</span>
         </div>
       </button>
