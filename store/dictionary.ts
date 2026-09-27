@@ -1,16 +1,21 @@
 import { computed, reactive, ref } from 'vue';
 import { defineStore } from 'pinia';
 import type {
-  AuditRecord, DictionaryEntry, DictionarySnapshot, DuplicatePair, EntryStatus, ReviewComment, VersionRecord
+  AuditRecord, ConfirmationBaseline, DictionaryEntry, DictionarySnapshot, DuplicatePair, EntryStatus, ReviewComment, VersionRecord
 } from '~/types/dictionary';
-import { findDuplicates } from '~/utils/dictionary';
+import { evaluateConfirmation, findDuplicates, migrateBaselines, pickReviewedFields, rejudgeConfirmedEntries } from '~/utils/dictionary';
 
 const now = () => new Date().toISOString();
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
+const seedBaseline = (entry: DictionaryEntry, revision: number, confirmedAt: string): DictionaryEntry => {
+  const confirmBaseline: ConfirmationBaseline = { confirmedAt, revision, fields: pickReviewedFields(entry) };
+  return { ...entry, confirmBaseline };
+};
+
 const seedEntries = (): DictionaryEntry[] => [
-  {
+  seedBaseline({
     id: 'entry-001', headword: 'ŋgɨ³³', pronunciation: 'ŋgɨ˧˧（低平调）', partOfSpeech: '名词', definition: '山间常年不涸的小水潭；也用来比喻安静而可靠的人。',
     dialectVariants: [
       { id: 'v-1', dialect: '北坡话', form: 'ŋgɨ³³ tsha⁵⁵', pronunciation: 'ŋgɨ tsha', note: '强调泉水源头' },
@@ -25,7 +30,7 @@ const seedEntries = (): DictionaryEntry[] => [
       { id: 'src-2', title: '嘎木村发音人访谈', citation: '录音 A-2018-04-17，00:12:31', url: '' }
     ],
     synonyms: ['水潭', '泉水'], status: 'confirmed', notes: '声调标音经两位发音人复核。', createdAt: '2024-08-11T04:00:00.000Z', updatedAt: '2025-03-09T06:12:00.000Z', reviewerComments: []
-  },
+  }, 1, '2025-03-09T06:12:00.000Z'),
   {
     id: 'entry-002', headword: 'dʑa⁵⁵', pronunciation: 'dʑa˥（高平调）', partOfSpeech: '动词', definition: '把谷物摊开晾晒；引申为耐心等待事情成熟。',
     dialectVariants: [{ id: 'v-3', dialect: '东南村话', form: 'dʑa⁵⁵ ka³³', pronunciation: 'dʑa ka', note: '带结果补语 habitual 形式' }],
@@ -40,9 +45,9 @@ const seedEntries = (): DictionaryEntry[] => [
   {
     id: 'entry-004', headword: 'ʔma³³', pronunciation: 'ʔma˧', partOfSpeech: '名词', definition: '母亲；也可用于称呼年长女性亲属。', dialectVariants: [{ id: 'v-4', dialect: '河西话', form: 'ma³³', pronunciation: 'ma', note: '喉塞音弱化' }], examples: [{ id: 'ex-5', text: 'ʔma³³, ŋa⁵⁵ tɕi³³ lo³³.', translation: '妈妈，我要回家了。', source: '日常生活会话 01' }], sources: [{ id: 'src-5', title: '亲缘称谓调查', citation: '赵某某，2011，表 3', url: '' }], synonyms: ['妈妈', '母亲'], status: 'draft', notes: '需补充敬称形式。', createdAt: '2025-01-11T04:00:00.000Z', updatedAt: '2025-01-11T04:00:00.000Z', reviewerComments: []
   },
-  {
+  seedBaseline({
     id: 'entry-005', headword: 'lo³³', pronunciation: 'lo˧', partOfSpeech: '方向词', definition: '表示向说话者所在位置移动，常与位移动词搭配。', dialectVariants: [], examples: [{ id: 'ex-6', text: 'a³³ mɨ⁵⁵ lo³³.', translation: '到这里来。', source: '语法调查句表 03' }], sources: [{ id: 'src-6', title: '动词方向范畴笔记', citation: '陈某某，2005，第 18 页', url: '' }], synonyms: ['来'], status: 'confirmed', notes: '', createdAt: '2024-09-18T02:00:00.000Z', updatedAt: '2025-01-04T02:00:00.000Z', reviewerComments: []
-  },
+  }, 1, '2025-01-04T02:00:00.000Z'),
   {
     id: 'entry-006', headword: 'tsha⁵⁵', pronunciation: 'tsha˥', partOfSpeech: '名词', definition: '水源；泉水涌出的地方。', dialectVariants: [], examples: [{ id: 'ex-7', text: 'tsha⁵⁵ ʔmɨ⁵⁵ ma³³.', translation: '泉眼在这个地方。', source: '地名调查 2022-07' }], sources: [{ id: 'src-7', title: '村落地名调查', citation: '录音 C-2022-07，00:22:08', url: '' }], synonyms: ['泉眼', '水潭'], status: 'review', notes: '', createdAt: '2025-02-01T02:00:00.000Z', updatedAt: '2025-02-25T02:00:00.000Z',
     reviewerComments: [{ id: 'c-2', field: 'sources', author: '审校·罗老师', message: '请把录音中发言人姓名补到资料来源。', status: 'open', createdAt: '2025-02-25T02:00:00.000Z', replies: [{ id: 'r-1', author: '编辑·阿木', message: '已向调查员索取授权信息，暂以录音编号占位。', createdAt: '2025-02-26T01:00:00.000Z' }] }]
@@ -102,6 +107,8 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     entries.splice(0, entries.length, ...(clone(value.entries ?? [])));
     versions.splice(0, versions.length, ...(clone(value.versions ?? [])));
     audit.splice(0, audit.length, ...(clone(value.audit ?? [])));
+    // 撤销/重做载入的“已确认”状态也要与基线重新比对，不沿用快照里的状态
+    rejudgeConfirmedEntries(entries);
     if (!entries.some((entry) => entry.id === selectedId.value)) selectedId.value = entries[0]?.id ?? '';
   }
 
@@ -112,9 +119,23 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     mutation();
     revision.value += 1;
     entries.forEach((entry) => { if (entryIds.includes(entry.id)) entry.updatedAt = now(); });
-    versions.unshift({ id: uid('version'), at: now(), action, detail, entryId: entryIds[0], before });
+    // 已确认词条的受审内容一旦偏离基线（或出现未解决意见），立即回到争议并标出偏离项；
+    // 发音、词性、编者备注不属于受审内容，改动不会影响确认状态
+    const demoted: string[] = [];
+    entries.forEach((entry) => {
+      if (entry.status !== 'confirmed') return;
+      const state = evaluateConfirmation(entry);
+      if (!entry.confirmBaseline || !state.canConfirm) {
+        entry.status = 'disputed';
+        demoted.push(entry.headword || entry.id);
+      }
+    });
+    const fullDetail = demoted.length
+      ? `${detail}；确认基线核对未通过，“${demoted.join('、')}”回到争议`
+      : detail;
+    versions.unshift({ id: uid('version'), at: now(), action, detail: fullDetail, entryId: entryIds[0], before });
     versions.splice(120);
-    audit.unshift({ id: uid('audit'), at: now(), action, detail, entryIds });
+    audit.unshift({ id: uid('audit'), at: now(), action, detail: fullDetail, entryIds });
     audit.splice(300);
   }
 
@@ -135,8 +156,35 @@ export const useDictionaryStore = defineStore('dictionary', () => {
   function setStatus(entryId: string, status: EntryStatus) {
     const entry = entries.find((item) => item.id === entryId);
     if (!entry || entry.status === status) return;
+    if (status === 'confirmed') {
+      confirmEntry(entryId);
+      return;
+    }
     const labels: Record<EntryStatus, string> = { draft: '草稿', review: '待审', disputed: '争议', confirmed: '已确认' };
     commit('变更状态', `词条状态改为“${labels[status]}”`, [entryId], () => { entry.status = status; });
+  }
+
+  /**
+   * 确认 / 重新确认词条：保存受审内容基线并记下当前修订号。
+   * 前置条件：未解决意见已处理完，且受审内容与既有基线一致（首次确认无基线除外）。
+   * 满足后用当前内容更新基线，审校人始终能辨认确认依据的是哪一版。
+   */
+  function confirmEntry(entryId: string) {
+    const entry = entries.find((item) => item.id === entryId);
+    if (!entry || entry.status === 'confirmed') return;
+    const state = evaluateConfirmation(entry);
+    if (!state.canConfirm) return;
+    const isReconfirm = Boolean(entry.confirmBaseline);
+    commit(isReconfirm ? '重新确认词条' : '确认词条', isReconfirm
+      ? `意见已处理完且受审内容与基线一致，更新确认基线至修订 r${revision.value + 1}`
+      : `锁定词形、释义、变体、例句、来源和同义词为确认基线（修订 r${revision.value + 1}）`, [entryId], () => {
+      entry.status = 'confirmed';
+      entry.confirmBaseline = {
+        confirmedAt: now(),
+        revision: revision.value + 1,
+        fields: pickReviewedFields(entry)
+      };
+    });
   }
 
   function addVariant(entryId: string) {
@@ -263,6 +311,8 @@ export const useDictionaryStore = defineStore('dictionary', () => {
         if (choice === 'source') target[field] = sources[0]![field];
         if (choice === 'combine' && target[field] !== sources[0]![field]) target[field] = `${target[field]}；${sources[0]![field]}`;
       });
+      // 合并产生了新的受审内容，旧确认基线不再适用：作废后回到争议，由审校人重新确认建立新基线
+      target.confirmBaseline = undefined;
       target.status = 'disputed';
       sourceIds.forEach((id) => {
         const index = entries.findIndex((entry) => entry.id === id);
@@ -292,13 +342,35 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     if (!version) return;
     commit('恢复版本', `恢复 ${new Date(version.at).toLocaleString('zh-CN')} 之前的版本`, [], () => {
       entries.splice(0, entries.length, ...clone(version.before));
+      // 恢复后必须重新判断确认状态：不能沿用恢复前的“已确认”
+      const demoted = rejudgeConfirmedEntries(entries);
+      if (demoted > 0) {
+        const item = versions[0];
+        const suffix = `；恢复内容与确认基线不符，${demoted} 个词条回到争议待重新确认`;
+        if (item) item.detail += suffix;
+        const auditItem = audit[0];
+        if (auditItem) auditItem.detail += suffix;
+      }
     });
   }
 
   function hydrateFromBrowser() {
     try {
       const raw = localStorage.getItem('sologsb-1021-dictionary-v1');
-      if (raw) restore(JSON.parse(raw) as DictionarySnapshot);
+      if (raw) {
+        const value = JSON.parse(raw) as DictionarySnapshot;
+        // 旧版本数据没有确认基线：为已确认词条按当时内容补录，随后统一重判
+        const migrated = migrateBaselines(value.entries ?? [], value.revision ?? 1, now());
+        restore({ ...value, entries: migrated, audit: clone(value.audit ?? []) });
+        const missing = (value.entries ?? []).filter((entry) => entry.status === 'confirmed' && !entry.confirmBaseline);
+        if (missing.length) {
+          audit.unshift({
+            id: uid('audit'), at: now(), action: '迁移确认基线',
+            detail: `为 ${missing.length} 个旧版已确认词条按当前内容补录确认基线，基线修订号记为 r${revision.value}`,
+            entryIds: missing.map((entry) => entry.id)
+          });
+        }
+      }
     } catch {
       localStorage.removeItem('sologsb-1021-dictionary-v1');
     } finally {
@@ -314,7 +386,7 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     revision, entries, versions, audit, selectedId, hydrated, query, statusFilter, dialectFilter, fieldReplyDrafts,
     selectedEntry, filteredEntries, dialects, duplicates, openComments, persistableSnapshot,
     canUndo: computed(() => undoStack.value.length > 0), canRedo: computed(() => redoStack.value.length > 0),
-    createEntry, updateField, setStatus, addVariant, updateVariant, removeVariant, addExample, updateExample, removeExample,
+    createEntry, updateField, setStatus, confirmEntry, addVariant, updateVariant, removeVariant, addExample, updateExample, removeExample,
     addSource, updateSource, removeSource, setSynonyms, addComment, replyComment, toggleComment, deleteEntry, mergeEntries,
     undo, redo, restoreVersion, hydrateFromBrowser, exportPackage
   };

@@ -21,7 +21,7 @@ const diff = (before: typeof store.entries) => {
 <template>
   <t-drawer v-model:visible="visible" header="版本记录" size="560px" :footer="false">
     <div class="version-drawer">
-      <div class="version-intro"><strong>{{ revisions.length }}</strong><span>个可恢复版本</span><p>每次字段编辑、状态变更、合并或删除都会在提交前保存完整快照。</p></div>
+      <div class="version-intro"><strong>{{ revisions.length }}</strong><span>个可恢复版本</span><p>每次字段编辑、状态变更、合并或删除都会在提交前保存完整快照。恢复版本后，已确认词条会按其确认基线重新判定：内容不符或意见未处理完的词条回到争议，不沿用恢复前的确认状态。</p></div>
       <div class="version-list">
         <article v-for="version in revisions" :key="version.id" class="version-item">
           <div class="version-line"><span class="version-dot" /><time>{{ new Date(version.at).toLocaleString('zh-CN') }}</time></div>

@@ -69,7 +69,7 @@ const confirmMerge = () => {
         <div><strong>审校意见</strong><span>{{ left.reviewerComments.length }} + {{ right.reviewerComments.length }}</span><small>合并时全部保留</small></div>
       </div>
 
-      <div class="merge-warning"><strong>合并结果会标记为“争议”</strong><span>被合并词条不再单独显示，但完整快照和字段来源会进入版本记录，可撤销或恢复。</span></div>
+      <div class="merge-warning"><strong>合并结果会标记为“争议”，原确认基线作废</strong><span>合并产生的是新的受审内容，原词条确认时锁定的基线不再适用，需要审校人按合并结果重新确认。被合并词条不再单独显示，但完整快照和字段来源会进入版本记录，可撤销或恢复。</span></div>
       <div class="dialog-actions"><t-button variant="outline" @click="visible = false">取消</t-button><t-button theme="primary" @click="confirmMerge">生成合并词条</t-button></div>
     </div>
     <t-empty v-else description="没有可合并的重复词条" />
